@@ -24,7 +24,6 @@ export class MercadoPagoWebhookHandler {
                       request.headers.get('x-real-ip') || 
                       'unknown';
 
-      console.log(`🔍 Webhook received from IP: ${clientIP}`);
 
       // 2. Procesar el webhook con los datos extraídos
       return await this.processWebhook(body, headers, clientIP);
@@ -50,7 +49,6 @@ export class MercadoPagoWebhookHandler {
     clientIP?: string
   ): Promise<WebhookProcessResult> {
     try {
-      console.log(`🔍 Processing webhook from IP: ${clientIP || 'unknown'}`);
 
       // 1. Validar la firma si está habilitada
       if (this.config.enableSignatureValidation) {
@@ -64,7 +62,6 @@ export class MercadoPagoWebhookHandler {
             error: signatureValidation.error
           };
         }
-        console.log('✅ Webhook signature validated successfully');
       }
 
       // 2. Parsear el JSON del webhook
@@ -80,13 +77,6 @@ export class MercadoPagoWebhookHandler {
           error: 'Failed to parse webhook JSON'
         };
       }
-
-      console.log('📦 Webhook data parsed:', {
-        type: webhookData.type,
-        action: webhookData.action,
-        data_id: webhookData.data?.id,
-        live_mode: webhookData.live_mode
-      });
 
       // 3. Procesar según el tipo de evento
       const result = await this.handleWebhookEvent(webhookData, headers);
@@ -134,7 +124,6 @@ export class MercadoPagoWebhookHandler {
     }
 
     // Otros tipos de webhooks (merchant_orders, subscriptions, etc.)
-    console.log(`ℹ️ Unhandled webhook type: ${topic}`);
     return {
       success: true,
       status: 200,
@@ -155,7 +144,6 @@ export class MercadoPagoWebhookHandler {
     baseLogData: WebhookLogData
   ): Promise<WebhookProcessResult> {
     try {
-      console.log(`💳 Processing payment webhook for ID: ${paymentId}`);
 
       // 1. Obtener información del pago desde MercadoPago API
       const paymentInfo = await this.getPaymentInfo(paymentId);
@@ -182,12 +170,7 @@ export class MercadoPagoWebhookHandler {
       const paymentStatus = paymentInfo.status;
       const externalReference = paymentInfo.external_reference;
 
-      console.log(`📊 Payment info retrieved:`, {
-        status: paymentStatus,
-        external_reference: externalReference,
-        amount: paymentInfo.transaction_amount,
-        currency: paymentInfo.currency_id
-      });
+  
 
       // 2. Mapear el estado de MercadoPago a un estado genérico
       const mappedStatus = this.mapPaymentStatus(paymentStatus);
