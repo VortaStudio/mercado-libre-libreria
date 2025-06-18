@@ -4,87 +4,162 @@ import { NextRequest } from 'next/server';
 import { createHmac } from 'crypto';
 import { WebhookEvent, WebhookConfig, WebhookProcessResult, WebhookLogData } from '../types';
 
-export class MercadoPagoWebhookHandler {
+// ============= STEP BUILDER PATTERN INTERFACES =============
+
+interface WebhookExtractionStep {
+  extractRequestData(request: NextRequest): Promise<WebhookDataStep>;
+}
+
+interface WebhookDataStep {
+  validateSignature(): WebhookValidationStep;
+  skipSignatureValidation(): WebhookValidationStep;
+}
+
+interface WebhookValidationStep {
+  parseWebhookData(): WebhookParsingStep;
+}
+
+interface WebhookParsingStep {
+  processEvent(): WebhookProcessingStep;
+}
+
+interface WebhookProcessingStep {
+  build(): Promise<WebhookProcessResult>;
+}
+
+// ============= STEP BUILDER IMPLEMENTATION =============
+
+class WebhookBuilder implements 
+  WebhookExtractionStep, 
+  WebhookDataStep, 
+  WebhookValidationStep, 
+  WebhookParsingStep, 
+  WebhookProcessingStep {
+
   private config: WebhookConfig;
+  private requestBody: string = '';
+  private headers: Record<string, string> = {};
+  private clientIP: string = 'unknown';
+  private webhookData: WebhookEvent | null = null;
+  private validationResult: { isValid: boolean; error?: string } = { isValid: true };
+  private baseLogData: WebhookLogData | null = null;
 
   constructor(config: WebhookConfig) {
     this.config = config;
   }
 
-  /**
-   * Método principal que procesa directamente el NextRequest
-   * Esta es la "caja negra" que maneja todo el procesamiento
-   */
-  async processWebhookRequest(request: NextRequest): Promise<WebhookProcessResult> {
+  // ============= STEP 1: EXTRACTION =============
+  async extractRequestData(request: NextRequest): Promise<WebhookDataStep> {
     try {
-      // 1. Extraer todos los datos necesarios del request
-      const body = await request.text();
-      const headers = Object.fromEntries(request.headers.entries());
-      const clientIP = request.headers.get('x-forwarded-for') || 
-                      request.headers.get('x-real-ip') || 
-                      'unknown';
-
-
-      // 2. Procesar el webhook con los datos extraídos
-      return await this.processWebhook(body, headers, clientIP);
-
+      this.requestBody = await request.text();
+      this.headers = Object.fromEntries(request.headers.entries());
+      this.clientIP = request.headers.get('x-forwarded-for') || 
+                     request.headers.get('x-real-ip') || 
+                     'unknown';
+      
+      console.log('✅ Step 1: Request data extracted successfully');
+      return this;
     } catch (error) {
-      console.error('💥 Error processing webhook request:', error);
-      return {
-        success: false,
-        status: 500,
-        message: 'Internal server error',
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
+      console.error('❌ Step 1 failed: Error extracting request data:', error);
+      throw new Error('Failed to extract request data');
     }
   }
 
-  /**
-   * Procesa y valida el webhook de MercadoPago
-   * Retorna los datos procesados para que el cliente decida qué hacer con ellos
-   */
-  async processWebhook(
-    requestBody: string, 
-    headers: Record<string, string>, 
-    clientIP?: string
-  ): Promise<WebhookProcessResult> {
-    try {
+  // ============= STEP 2: VALIDATION =============
+  validateSignature(): WebhookValidationStep {
+    if (this.config.enableSignatureValidation) {
+      this.validationResult = this.performSignatureValidation(this.requestBody, this.headers);
+      
+      if (!this.validationResult.isValid) {
+        console.error('❌ Step 2 failed: Invalid webhook signature:', this.validationResult.error);
+      } else {
+        console.log('✅ Step 2: Signature validation passed');
+      }
+    } else {
+      console.log('⚠️ Step 2: Signature validation skipped (disabled)');
+    }
+    
+    return this;
+  }
 
-      // 1. Validar la firma si está habilitada
-      if (this.config.enableSignatureValidation) {
-        const signatureValidation = this.validateSignature(requestBody, headers);
-        if (!signatureValidation.isValid) {
-          console.error('❌ Invalid webhook signature:', signatureValidation.error);
-          return {
-            success: false,
-            status: 403,
-            message: 'Invalid signature',
-            error: signatureValidation.error
-          };
-        }
+  skipSignatureValidation(): WebhookValidationStep {
+    this.validationResult = { isValid: true };
+    console.log('⚠️ Step 2: Signature validation explicitly skipped');
+    return this;
+  }
+
+  // ============= STEP 3: PARSING =============
+  parseWebhookData(): WebhookParsingStep {
+    try {
+      if (!this.validationResult.isValid) {
+        throw new Error(`Signature validation failed: ${this.validationResult.error}`);
       }
 
-      // 2. Parsear el JSON del webhook
-      let webhookData: WebhookEvent;
-      try {
-        webhookData = JSON.parse(requestBody);
-      } catch (error) {
-        console.error('❌ Invalid JSON in webhook request:', error);
+      this.webhookData = JSON.parse(this.requestBody);
+      
+      // Crear base log data
+      this.baseLogData = {
+        webhook_id: this.webhookData?.id?.toString() || 'unknown',
+        payment_id: this.webhookData?.data?.id || null,
+        topic: this.webhookData?.type || 'unknown',
+        action: this.webhookData?.action || null,
+        live_mode: this.webhookData?.live_mode || false,
+        user_id: this.webhookData?.user_id?.toString() || null,
+        api_version: this.webhookData?.api_version || null,
+        date_created: this.webhookData?.date_created || new Date().toISOString(),
+        raw_data: this.webhookData,
+        headers_received: this.headers,
+        processed_at: new Date().toISOString()
+      };
+
+      console.log('✅ Step 3: Webhook data parsed successfully');
+      return this;
+    } catch (error) {
+      console.error('❌ Step 3 failed: Error parsing webhook data:', error);
+      throw new Error('Failed to parse webhook JSON');
+    }
+  }
+
+  // ============= STEP 4: PROCESSING =============
+  processEvent(): WebhookProcessingStep {
+    if (!this.webhookData || !this.baseLogData) {
+      throw new Error('Webhook data not available for processing');
+    }
+
+    console.log(`✅ Step 4: Ready to process ${this.webhookData.type} event`);
+    return this;
+  }
+
+  // ============= STEP 5: BUILD =============
+  async build(): Promise<WebhookProcessResult> {
+    if (!this.webhookData || !this.baseLogData) {
+      return {
+        success: false,
+        status: 500,
+        message: 'Internal error: Missing webhook data',
+        error: 'Webhook data not properly initialized'
+      };
+    }
+
+    try {
+      // Verificar si hay errores de validación
+      if (!this.validationResult.isValid) {
         return {
           success: false,
-          status: 400,
-          message: 'Invalid JSON format',
-          error: 'Failed to parse webhook JSON'
+          status: 403,
+          message: 'Invalid signature',
+          error: this.validationResult.error
         };
       }
 
-      // 3. Procesar según el tipo de evento
-      const result = await this.handleWebhookEvent(webhookData, headers);
+      // Procesar según el tipo de evento
+      const result = await this.handleEventByType(this.webhookData, this.baseLogData);
       
+      console.log('✅ Step 5: Webhook processing completed successfully');
       return result;
 
     } catch (error) {
-      console.error('💥 Unexpected error processing webhook:', error);
+      console.error('❌ Step 5 failed: Error in final processing:', error);
       return {
         success: false,
         status: 500,
@@ -94,36 +169,17 @@ export class MercadoPagoWebhookHandler {
     }
   }
 
-  /**
-   * Maneja diferentes tipos de eventos de webhook
-   */
-  private async handleWebhookEvent(
-    webhookData: WebhookEvent, 
-    headers: Record<string, string>
-  ): Promise<WebhookProcessResult> {
-    const { type: topic, data, action } = webhookData;
+  // ============= PRIVATE HELPER METHODS =============
+
+  private async handleEventByType(webhookData: WebhookEvent, baseLogData: WebhookLogData): Promise<WebhookProcessResult> {
+    const { type: topic, data } = webhookData;
     const paymentId = data?.id;
 
-    // Crear datos base del log
-    const baseLogData: WebhookLogData = {
-      webhook_id: webhookData.id?.toString() || 'unknown',
-      payment_id: paymentId || null,
-      topic: topic,
-      action: action || null,
-      live_mode: webhookData.live_mode || false,
-      user_id: webhookData.user_id?.toString() || null,
-      api_version: webhookData.api_version || null,
-      date_created: webhookData.date_created || new Date().toISOString(),
-      raw_data: webhookData,
-      headers_received: headers,
-      processed_at: new Date().toISOString()
-    };
-
     if (topic === 'payment' && paymentId) {
-      return await this.handlePaymentWebhook(paymentId, baseLogData);
+      return await this.handlePaymentEvent(paymentId, baseLogData);
     }
 
-    // Otros tipos de webhooks (merchant_orders, subscriptions, etc.)
+    // Otros tipos de eventos
     return {
       success: true,
       status: 200,
@@ -136,20 +192,11 @@ export class MercadoPagoWebhookHandler {
     };
   }
 
-  /**
-   * Procesa webhooks de tipo payment
-   */
-  private async handlePaymentWebhook(
-    paymentId: string, 
-    baseLogData: WebhookLogData
-  ): Promise<WebhookProcessResult> {
+  private async handlePaymentEvent(paymentId: string, baseLogData: WebhookLogData): Promise<WebhookProcessResult> {
     try {
-
-      // 1. Obtener información del pago desde MercadoPago API
       const paymentInfo = await this.getPaymentInfo(paymentId);
       
       if (!paymentInfo) {
-        console.error(`❌ Failed to fetch payment info for ID: ${paymentId}`);
         return {
           success: false,
           status: 400,
@@ -167,19 +214,11 @@ export class MercadoPagoWebhookHandler {
         };
       }
 
-      const paymentStatus = paymentInfo.status;
-      const externalReference = paymentInfo.external_reference;
-
-  
-
-      // 2. Mapear el estado de MercadoPago a un estado genérico
-      const mappedStatus = this.mapPaymentStatus(paymentStatus);
-
-      // 3. Preparar datos completos del log
+      const mappedStatus = this.mapPaymentStatus(paymentInfo.status);
       const completeLogData: WebhookLogData = {
         ...baseLogData,
-        status: paymentStatus,
-        external_reference: externalReference || null,
+        status: paymentInfo.status,
+        external_reference: paymentInfo.external_reference || null,
         mapped_status: mappedStatus,
         transaction_amount: paymentInfo.transaction_amount || null,
         currency_id: paymentInfo.currency_id || null,
@@ -187,7 +226,6 @@ export class MercadoPagoWebhookHandler {
         payer_email: paymentInfo.payer?.email || null
       };
 
-      // 4. Retornar todos los datos procesados
       return {
         success: true,
         status: 200,
@@ -200,8 +238,6 @@ export class MercadoPagoWebhookHandler {
       };
 
     } catch (error) {
-      console.error('💥 Error processing payment webhook:', error);
-      
       const errorLogData: WebhookLogData = {
         ...baseLogData,
         status: 'processing_error',
@@ -222,9 +258,6 @@ export class MercadoPagoWebhookHandler {
     }
   }
 
-  /**
-   * Obtiene información del pago desde MercadoPago API
-   */
   private async getPaymentInfo(paymentId: string): Promise<any> {
     try {
       const { MercadoPagoConfig, Payment } = await import('mercadopago');
@@ -239,20 +272,13 @@ export class MercadoPagoWebhookHandler {
       const payment = new Payment(client);
       const response = await payment.get({ id: paymentId });
 
-      if (!response || !response.id) {
-        return null;
-      }
-
-      return response;
+      return response?.id ? response : null;
     } catch (error) {
       console.error('❌ Error fetching payment info from MercadoPago API:', error);
       return null;
     }
   }
 
-  /**
-   * Mapea los estados de MercadoPago a estados genéricos del sistema
-   */
   private mapPaymentStatus(mercadoPagoStatus: string): string {
     const statusMapping: Record<string, string> = {
       'approved': 'approved',
@@ -269,17 +295,13 @@ export class MercadoPagoWebhookHandler {
     return statusMapping[mercadoPagoStatus] || 'unknown';
   }
 
-  /**
-   * Valida la firma del webhook usando HMAC SHA256
-   * Implementación basada en la documentación oficial de MercadoPago
-   */
-  private validateSignature(body: string, headers: Record<string, string>): {
+  private performSignatureValidation(body: string, headers: Record<string, string>): {
     isValid: boolean;
     error?: string;
   } {
     try {
       if (!this.config.webhookSecret) {
-        return { isValid: true }; // Si no hay secret configurado, omitimos validación
+        return { isValid: true };
       }
 
       const signature = headers['x-signature'] || headers['X-Signature'];
@@ -287,8 +309,6 @@ export class MercadoPagoWebhookHandler {
         return { isValid: false, error: 'Missing x-signature header' };
       }
 
-      // Extraer timestamp y signature del header
-      // Formato: ts=1234567890,v1=signature_hash
       const parts = signature.split(',');
       let timestamp = '';
       let receivedSignature = '';
@@ -306,25 +326,14 @@ export class MercadoPagoWebhookHandler {
         return { isValid: false, error: 'Invalid signature format' };
       }
 
-      // Crear el mensaje para validar según documentación de MP
       const dataId = headers['data_id'] || this.extractDataIdFromBody(body);
       const manifest = `id:${dataId};request-id:${headers['x-request-id'] || ''};ts:${timestamp};`;
 
-      // Generar HMAC SHA256
       const expectedSignature = createHmac('sha256', this.config.webhookSecret)
         .update(manifest)
         .digest('hex');
 
-      // Comparar firmas de forma segura
       const isValid = this.safeCompare(expectedSignature, receivedSignature);
-
-      if (!isValid) {
-        console.warn('🔐 Signature validation failed:', {
-          manifest,
-          expected: expectedSignature,
-          received: receivedSignature
-        });
-      }
 
       return { isValid };
 
@@ -334,9 +343,6 @@ export class MercadoPagoWebhookHandler {
     }
   }
 
-  /**
-   * Extrae el data_id del body del webhook
-   */
   private extractDataIdFromBody(body: string): string {
     try {
       const data = JSON.parse(body);
@@ -346,9 +352,6 @@ export class MercadoPagoWebhookHandler {
     }
   }
 
-  /**
-   * Comparación segura de strings para evitar timing attacks
-   */
   private safeCompare(expected: string, received: string): boolean {
     if (expected.length !== received.length) {
       return false;
@@ -361,9 +364,85 @@ export class MercadoPagoWebhookHandler {
 
     return result === 0;
   }
+}
+
+// ============= MAIN WEBHOOK HANDLER CLASS =============
+
+export class MercadoPagoWebhookHandler {
+  private config: WebhookConfig;
+
+  constructor(config: WebhookConfig) {
+    this.config = config;
+  }
 
   /**
-   * Método utilitario para verificar si un webhook es válido sin procesarlo completamente
+   * Método principal usando Step Builder Pattern
+   * Garantiza que todos los pasos se ejecuten en el orden correcto
+   */
+  async processWebhookRequest(request: NextRequest): Promise<WebhookProcessResult> {
+    try {
+      console.log('🚀 Starting webhook processing with Step Builder Pattern');
+      
+      const result = await new WebhookBuilder(this.config)
+        .extractRequestData(request)                    // Step 1: Extract
+        .then(builder => builder.validateSignature())  // Step 2: Validate
+        .then(builder => builder.parseWebhookData())    // Step 3: Parse
+        .then(builder => builder.processEvent())        // Step 4: Process
+        .then(builder => builder.build());              // Step 5: Build
+
+      console.log('✅ Webhook processing completed successfully');
+      return result;
+
+    } catch (error) {
+      console.error('💥 Error in webhook processing pipeline:', error);
+      return {
+        success: false,
+        status: 500,
+        message: 'Internal server error',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Método alternativo para procesar con datos ya extraídos
+   * Útil para testing o cuando ya tienes los datos del request
+   */
+  async processWebhookData(
+    requestBody: string, 
+    headers: Record<string, string>
+  ): Promise<WebhookProcessResult> {
+    try {
+      console.log('🚀 Starting webhook data processing with Step Builder Pattern');
+      
+      // Simular el primer paso con datos ya extraídos
+      const builder = new WebhookBuilder(this.config);
+      (builder as any).requestBody = requestBody;
+      (builder as any).headers = headers;
+      (builder as any).clientIP = 'manual';
+
+      const result = await builder
+        .validateSignature()     // Step 2: Validate
+        .parseWebhookData()      // Step 3: Parse
+        .processEvent()          // Step 4: Process
+        .build();                // Step 5: Build
+
+      console.log('✅ Webhook data processing completed successfully');
+      return result;
+
+    } catch (error) {
+      console.error('💥 Error in webhook data processing pipeline:', error);
+      return {
+        success: false,
+        status: 500,
+        message: 'Internal server error',
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Método para validación rápida sin procesamiento completo
    */
   async validateWebhookOnly(body: string, headers: Record<string, string>): Promise<{
     isValid: boolean;
@@ -371,23 +450,16 @@ export class MercadoPagoWebhookHandler {
     webhookType?: string;
   }> {
     try {
-      // Validar firma si está habilitada
-      if (this.config.enableSignatureValidation) {
-        const signatureValidation = this.validateSignature(body, headers);
-        if (!signatureValidation.isValid) {
-          return {
-            isValid: false,
-            error: signatureValidation.error
-          };
-        }
-      }
+      const builder = new WebhookBuilder(this.config);
+      (builder as any).requestBody = body;
+      (builder as any).headers = headers;
 
-      // Parsear y validar estructura básica
-      const webhookData = JSON.parse(body);
+      const validationStep = builder.validateSignature();
+      const parsingStep = validationStep.parseWebhookData();
       
       return {
         isValid: true,
-        webhookType: webhookData.type
+        webhookType: (parsingStep as any).webhookData?.type
       };
     } catch (error) {
       return {

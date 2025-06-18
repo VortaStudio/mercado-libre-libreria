@@ -126,7 +126,7 @@ export class MercadoPagoBuilder {
       auto_return: 'approved',
       notification_url: `${this.config.WEBHOOK_URL}`,
       payment_methods: {
-        installments: 1,
+        installments: 12,
         excluded_payment_types: [{ id: 'ticket' }],
       },
       date_of_expiration: expirationDate.toISOString(),
