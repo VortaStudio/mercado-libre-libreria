@@ -1,0 +1,23 @@
+# Source files
+src/
+tests/
+*.test.ts
+*.spec.ts
+
+# Config files
+tsconfig.json
+.eslintrc.js
+jest.config.js
+
+# Development
+node_modules/
+.git/
+.github/
+.vscode/
+.env*
+
+# Build artifacts (keep only dist/)
+*.tsbuildinfo
+
+# Documentation source
+docs/
